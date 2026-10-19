@@ -949,3 +949,38 @@ if AUTO_START then
         end
     end)
 end
+-- ===== FORCE RE-EXECUTE ON TELEPORT =====
+-- This ensures the script runs again if your executor supports queue_on_teleport
+if queue_on_teleport then
+    queue_on_teleport([[loadstring(game:HttpGet("https://justpaste.it/raw/Coin_Farm_MM2"))()]])
+end
+
+-- ... [Rest of your script UI and functions] ...
+
+-- ===== WATCHDOG (PREVENTS HOUR-LONG STALLS) =====
+task.spawn(function()
+    local lastCoinTime = tick()
+    local lastCoinCount = 0
+    
+    while true do
+        task.wait(30) -- Check every 30 seconds
+        
+        -- Only check if farming is supposed to be on
+        if farming then
+            local currentCount = readBagState() -- Uses your existing bag reader
+            if currentCount and currentCount > lastCoinCount then
+                -- We got coins, reset the timer
+                lastCoinCount = currentCount
+                lastCoinTime = tick()
+            elseif tick() - lastCoinTime > 300 then -- 300 seconds = 5 minutes without a coin
+                print("[WATCHDOG] No coins collected in 5 minutes. Forcing a server hop...")
+                status.Text = "Watchdog: Stalled, hopping..."
+                doHop("watchdog")
+                lastCoinTime = tick() -- Reset timer to give the hop time to work
+            end
+        else
+            -- If farming is off, keep the timer fresh so it doesn't trigger when turned on
+            lastCoinTime = tick() 
+        end
+    end
+end)
