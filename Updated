@@ -1,986 +1,457 @@
--- language: Lua, target: Roblox (MM2), executor: any UNC-compatible
--- Fully automated: Auto-play click, auto-farm, 15m auto-hop, anti-AFK.
+-- language: Lua, file: MM2_AutoStartFarm.lua, target: Roblox / Murder Mystery 2
+-- Fixes: getscriptbytecode argument, queueFunc parsing, auto-start.
 
-local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local VirtualUser = game:GetService("VirtualUser")
+local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
-local GuiService = game:GetService("GuiService")
+local CoreGui = game:GetService("CoreGui")
 
-local LP = Players.LocalPlayer
+local LocalPlayer = Players.LocalPlayer
 
--- ===== CONFIG =====
-local PLACE_ID = 142823291
-local HOP_INTERVAL = 15 * 60
-local HOP_COOLDOWN = 60
-local AUTO_START = true
-local AUTO_START_DELAY = 3.0
-local HOP_SAFETY = 10
+-- ============================================================
+-- CONFIG
+-- ============================================================
+local FARM_ACTIVE = false
+local isWaitingForNextRound = false
+local currentTweenConn = nil
+local bagTextLabel = nil
+local fullLabel = nil
+local collectedCache = {} 
+local SPEED_STUDS_PER_SEC = 25
+local isTweening = false
+local currentStateConn = nil
+local HOP_INTERVAL = 900 -- 15 minutes
+local disconnectTriggered = false
 
--- ===== UI =====
-local old = game:GetService("CoreGui"):FindFirstChild("MM2_CandyFarm_UI")
-if old then old:Destroy() end
+-- ============================================================
+-- UI
+-- ============================================================
+local oldGui = CoreGui:FindFirstChild("CoinFarmMM2_UI")
+if oldGui then oldGui:Destroy() end
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "MM2_CandyFarm_UI"
-gui.ResetOnSpawn = false
-gui.Parent = game:GetService("CoreGui")
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "CoinFarmMM2_UI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = CoreGui
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 290, 0, 320)
-frame.Position = UDim2.new(0, 20, 0.25, 0)
-frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-frame.BorderSizePixel = 0
-frame.Active = true
-frame.Draggable = true
-frame.Parent = gui
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "Main"
+MainFrame.Size = UDim2.new(0, 280, 0, 160)
+MainFrame.Position = UDim2.new(0.5, -140, 0.5, -80)
+MainFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 24)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Parent = ScreenGui
 
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 36)
-title.BackgroundTransparency = 1
-title.Text = "MM2 Candy Farm"
-title.TextColor3 = Color3.fromRGB(255, 200, 60)
-title.TextSize = 18
-title.Font = Enum.Font.GothamBold
-title.Parent = frame
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 16)
+UICorner.Parent = MainFrame
 
-local btn = Instance.new("TextButton")
-btn.Size = UDim2.new(0.8, 0, 0, 34)
-btn.Position = UDim2.new(0.1, 0, 0, 42)
-btn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-btn.Text = "Farm: OFF"
-btn.TextSize = 15
-btn.Font = Enum.Font.Gotham
-btn.Parent = frame
-Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+local UIStroke = Instance.new("UIStroke")
+UIStroke.Color = Color3.fromRGB(240, 240, 240)
+UIStroke.Thickness = 2.5
+UIStroke.Parent = MainFrame
 
-local antiAfkBtn = Instance.new("TextButton")
-antiAfkBtn.Size = UDim2.new(0.8, 0, 0, 28)
-antiAfkBtn.Position = UDim2.new(0.1, 0, 0, 80)
-antiAfkBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-antiAfkBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-antiAfkBtn.Text = "Anti-AFK: OFF"
-antiAfkBtn.TextSize = 13
-antiAfkBtn.Font = Enum.Font.Gotham
-antiAfkBtn.Parent = frame
-Instance.new("UICorner", antiAfkBtn).CornerRadius = UDim.new(0, 6)
+local UIGradient = Instance.new("UIGradient")
+UIGradient.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(28, 28, 30)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 18, 20)),
+}
+UIGradient.Rotation = 90
+UIGradient.Parent = MainFrame
 
-local hopBtn = Instance.new("TextButton")
-hopBtn.Size = UDim2.new(0.8, 0, 0, 28)
-hopBtn.Position = UDim2.new(0.1, 0, 0, 112)
-hopBtn.BackgroundColor3 = Color3.fromRGB(60, 100, 60)
-hopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-hopBtn.Text = "Auto-Hop: 15:00"
-hopBtn.TextSize = 13
-hopBtn.Font = Enum.Font.Gotham
-hopBtn.Parent = frame
-Instance.new("UICorner", hopBtn).CornerRadius = UDim.new(0, 6)
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.Size = UDim2.new(1, 0, 0, 36)
+Title.Position = UDim2.new(0, 0, 0, 24)
+Title.BackgroundTransparency = 1
+Title.Text = "Coin Farm"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 32
+Title.Font = Enum.Font.GothamBold
+Title.Parent = MainFrame
 
-local hopNowBtn = Instance.new("TextButton")
-hopNowBtn.Size = UDim2.new(0.35, 0, 0, 22)
-hopNowBtn.Position = UDim2.new(0.1, 0, 0, 143)
-hopNowBtn.BackgroundColor3 = Color3.fromRGB(140, 80, 80)
-hopNowBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-hopNowBtn.Text = "Hop Now"
-hopNowBtn.TextSize = 12
-hopNowBtn.Font = Enum.Font.Gotham
-hopNowBtn.Parent = frame
-Instance.new("UICorner", hopNowBtn).CornerRadius = UDim.new(0, 6)
+local Subtitle = Instance.new("TextLabel")
+Subtitle.Name = "Subtitle"
+Subtitle.Size = UDim2.new(1, 0, 0, 22)
+Subtitle.Position = UDim2.new(0, 0, 0, 62)
+Subtitle.BackgroundTransparency = 1
+Subtitle.Text = "i love cum"
+Subtitle.TextColor3 = Color3.fromRGB(200, 130, 255)
+Subtitle.TextSize = 18
+Subtitle.Font = Enum.Font.Gotham
+Subtitle.Parent = MainFrame
 
-local speedLabel = Instance.new("TextLabel")
-speedLabel.Size = UDim2.new(0.8, 0, 0, 20)
-speedLabel.Position = UDim2.new(0.1, 0, 0, 170)
-speedLabel.BackgroundTransparency = 1
-speedLabel.Text = "Speed: 30"
-speedLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
-speedLabel.TextSize = 13
-speedLabel.Font = Enum.Font.Gotham
-speedLabel.TextXAlignment = Enum.TextXAlignment.Left
-speedLabel.Parent = frame
+local SwitchBack = Instance.new("Frame")
+SwitchBack.Name = "SwitchBack"
+SwitchBack.Size = UDim2.new(0, 60, 0, 30)
+SwitchBack.Position = UDim2.new(0.5, -30, 1, -56)
+SwitchBack.BackgroundColor3 = Color3.fromRGB(80, 80, 85)
+SwitchBack.BorderSizePixel = 0
+SwitchBack.Parent = MainFrame
 
-local sliderBg = Instance.new("Frame")
-sliderBg.Size = UDim2.new(0.8, 0, 0, 10)
-sliderBg.Position = UDim2.new(0.1, 0, 0, 195)
-sliderBg.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
-sliderBg.BorderSizePixel = 0
-sliderBg.Parent = frame
-Instance.new("UICorner", sliderBg).CornerRadius = UDim.new(1, 0)
+local SwitchCorner = Instance.new("UICorner")
+SwitchCorner.CornerRadius = UDim.new(1, 0)
+SwitchCorner.Parent = SwitchBack
 
-local sliderFill = Instance.new("Frame")
-sliderFill.Size = UDim2.new(0.5, 0, 1, 0)
-sliderFill.BackgroundColor3 = Color3.fromRGB(255, 200, 60)
-sliderFill.BorderSizePixel = 0
-sliderFill.Parent = sliderBg
-Instance.new("UICorner", sliderFill).CornerRadius = UDim.new(1, 0)
+local Knob = Instance.new("Frame")
+Knob.Name = "Knob"
+Knob.Size = UDim2.new(0, 24, 0, 24)
+Knob.Position = UDim2.new(0, 3, 0.5, -12)
+Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+Knob.BorderSizePixel = 0
+Knob.Parent = SwitchBack
 
-local knob = Instance.new("Frame")
-knob.Size = UDim2.new(0, 16, 0, 16)
-knob.Position = UDim2.new(0.5, -8, 0.5, -8)
-knob.BackgroundColor3 = Color3.fromRGB(255, 220, 100)
-knob.BorderSizePixel = 0
-knob.Parent = sliderBg
-Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+local KnobCorner = Instance.new("UICorner")
+KnobCorner.CornerRadius = UDim.new(1, 0)
+KnobCorner.Parent = Knob
 
-local hitArea = Instance.new("TextButton")
-hitArea.Size = UDim2.new(1, 0, 2, 0)
-hitArea.Position = UDim2.new(0, 0, -0.5, 0)
-hitArea.BackgroundTransparency = 1
-hitArea.Text = ""
-hitArea.Parent = sliderBg
+local ClickBtn = Instance.new("TextButton")
+ClickBtn.Name = "ClickBtn"
+ClickBtn.Size = UDim2.new(1, 0, 1, 0)
+ClickBtn.BackgroundTransparency = 1
+ClickBtn.Text = ""
+ClickBtn.Parent = SwitchBack
 
-local status = Instance.new("TextLabel")
-status.Size = UDim2.new(1, -10, 0, 80)
-status.Position = UDim2.new(0, 5, 0, 220)
-status.BackgroundTransparency = 1
-status.Text = "idle"
-status.TextColor3 = Color3.fromRGB(180, 180, 180)
-status.TextSize = 12
-status.Font = Enum.Font.Gotham
-status.TextWrapped = true
-status.TextYAlignment = Enum.TextYAlignment.Top
-status.Parent = frame
-
--- ===== TUNING =====
-local GLIDE_MIN         = 5
-local GLIDE_MAX         = 50
-local GLIDE_SPEED       = 30
-local ARRIVE_DIST       = 0.5
-local APPROACH_DIST     = 4.0
-local COLLECT_TIMEOUT   = 0.30
-local MIN_DT            = 1/240
-local RESCAN_INTERVAL   = 5.0
-local ANTI_AFK_PERIOD   = 30
-local BAG_CHECK_INTERVAL = 1.0
-local NO_DESPAWN_SKIP   = 3.0
-
--- ===== STATE =====
-local farming = false
-local antiAfkOn = false
-local antiAfkThread: thread? = nil
-local targetPart = nil
-local originalCollisions = {}
-local charAlive = false
-local inRound = false
-local roundStartAt = 0
-local lastRescan = 0
-local lastBagCheck = 0
-local lastResetT = 0
-local mapDirty = true
-local ignoredCoins = {}
-local roundStartConn: RBXScriptConnection? = nil
-local roundEndConn: RBXScriptConnection? = nil
-local timerConn: RBXScriptConnection? = nil
-local scriptLoadT = tick()
-local lastHopT = tick()
-local hopEnabled = true
-local hopInProgress = false
-local lastHopAttemptT = 0
-
-local function getChar()
-    local c = LP.Character
-    if not c or not c.Parent then return nil end
-    local hrp = c:FindFirstChild("HumanoidRootPart")
-    local hum = c:FindFirstChildOfClass("Humanoid")
-    if hrp and hum and hum.Health > 0 then return c, hrp, hum end
-    return nil
+local function toggleUI(state)
+    FARM_ACTIVE = state
+    local targetColor = state and Color3.fromRGB(46, 160, 67) or Color3.fromRGB(80, 80, 85)
+    local targetPos = state and UDim2.new(1, -27, 0.5, -12) or UDim2.new(0, 3, 0.5, -12)
+    
+    TweenService:Create(SwitchBack, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        BackgroundColor3 = targetColor
+    }):Play()
+    TweenService:Create(Knob, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Position = targetPos
+    }):Play()
 end
 
-local function getLegs()
-    local c = LP.Character
-    if not c then return nil, nil end
-    local l = c:FindFirstChild("LeftUpperLeg") or c:FindFirstChild("Left Leg")
-    local r = c:FindFirstChild("RightUpperLeg") or c:FindFirstChild("Right Leg")
-    return l, r
-end
+local dragging = false
+local dragStart, startPos
 
-local function setSpeed(v)
-    GLIDE_SPEED = math.clamp(v, GLIDE_MIN, GLIDE_MAX)
-    speedLabel.Text = string.format("Speed: %d", math.floor(GLIDE_SPEED))
-    local ratio = (GLIDE_SPEED - GLIDE_MIN) / (GLIDE_MAX - GLIDE_MIN)
-    sliderFill.Size = UDim2.new(ratio, 0, 1, 0)
-    knob.Position = UDim2.new(ratio, -8, 0.5, -8)
-end
-
-local function sliderFromMouse(x)
-    local absX = hitArea.AbsolutePosition.X
-    local w = hitArea.AbsoluteSize.X
-    if w <= 0 then return end
-    local ratio = math.clamp((x - absX) / w, 0, 1)
-    setSpeed(GLIDE_MIN + ratio * (GLIDE_MAX - GLIDE_MIN))
-end
-
-local sliderActive = false
-hitArea.MouseButton1Down:Connect(function()
-    sliderActive = true
-    sliderFromMouse(UserInputService:GetMouseLocation().X)
-end)
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-       or input.UserInputType == Enum.UserInputType.Touch then
-        sliderActive = false
+MainFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
     end
 end)
-RunService.RenderStepped:Connect(function()
-    if not sliderActive then return end
-    sliderFromMouse(UserInputService:GetMouseLocation().X)
-end)
-setSpeed(GLIDE_SPEED)
 
--- ===== AUTO-CLICK PLAY =====
-local clickedButtons = {}
-local lastClickTime = 0
-local clicksCount = 0
-
-local function simulateClick(btn)
-    if not btn or not btn.Visible then return false end
-    local pos = btn.AbsolutePosition
-    local size = btn.AbsoluteSize
-    if size.X < 5 or size.Y < 5 then return false end
-    
-    local inset = GuiService:GetGuiInset()
-    local center = pos + (size / 2) + inset
-
-    local ok = pcall(function()
-        local vim = game:GetService("VirtualInputManager")
-        vim:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
-        task.wait(0.1)
-        vim:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
-    end)
-    
-    if ok then
-        print("[AUTO-PLAY] Clicked:", btn:GetFullName())
-        return true
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
     end
-    return false
+end)
+
+-- ============================================================
+-- GAME LOGIC
+-- ============================================================
+local function getHRP()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
 end
 
-local function autoClickPlay()
-    if clicksCount >= 4 then return false end
-    local pg = LP:FindFirstChild("PlayerGui")
-    if not pg then return false end
-    
-    for _, gui in ipairs(pg:GetDescendants()) do
-        if gui:IsA("TextButton") or gui:IsA("ImageButton") then
-            if not clickedButtons[gui] then
-                local isVisible = gui.Visible
-                local parent = gui.Parent
-                while parent and parent ~= pg do
-                    if parent:IsA("ScreenGui") and not parent.Enabled then
-                        isVisible = false
-                        break
-                    end
-                    parent = parent.Parent
-                end
-
-                if isVisible and gui.AbsoluteSize.Magnitude > 0 then
-                    local text = string.lower(gui.Text or "")
-                    local name = string.lower(gui.Name)
-                    
-                    if name == "play" or text == "play" then
-                        local path = gui:GetFullName()
-                        if not path:find("Archive") then
-                            if simulateClick(gui) then
-                                clickedButtons[gui] = true
-                                lastClickTime = tick()
-                                clicksCount += 1
-                                return true
-                            end
-                        end
+local function refreshUILabels()
+    if not bagTextLabel or not bagTextLabel.Parent then
+        bagTextLabel = nil
+        fullLabel = nil
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        if pg then
+            local main = pg:FindFirstChild("MainGUI")
+            if main and main:FindFirstChild("Game") and main.Game:FindFirstChild("CoinBags") then
+                local bags = main.Game.CoinBags
+                local c = bags:FindFirstChild("Container")
+                if c then
+                    local candyBag = c:FindFirstChild("Candy") or c:FindFirstChild("Coin")
+                    if candyBag then
+                        bagTextLabel = candyBag:FindFirstChild("Coins")
+                        fullLabel = candyBag:FindFirstChild("Full")
                     end
                 end
             end
         end
     end
-    return false
 end
 
-task.spawn(function()
-    local idleTime = 0
-    for i = 1, 30 do
-        if tick() - lastClickTime < 4 then
-            task.wait(1)
-        else
-            local clicked = autoClickPlay()
-            if clicked then
-                idleTime = 0
-            else
-                idleTime += 1
-                if idleTime >= 4 then break end
+local function isBagFull()
+    refreshUILabels()
+    if fullLabel and fullLabel.Visible then return true end
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if pg then
+        for _, obj in ipairs(pg:GetDescendants()) do
+            if (obj:IsA("TextLabel")) and obj.Visible and (obj.Text == "Full!" or obj.Text == "COIN BAG FULL!") then
+                return true
             end
-            task.wait(1)
-        end
-    end
-end)
-
--- ===== ANTI-AFK =====
-local function antiAfkLoop()
-    while antiAfkOn do
-        pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton2(Vector2.new())
-        end)
-        task.wait(ANTI_AFK_PERIOD)
-    end
-end
-
-antiAfkBtn.MouseButton1Click:Connect(function()
-    antiAfkOn = not antiAfkOn
-    antiAfkBtn.Text = antiAfkOn and "Anti-AFK: ON" or "Anti-AFK: OFF"
-    antiAfkBtn.BackgroundColor3 = antiAfkOn and Color3.fromRGB(50, 160, 50) or Color3.fromRGB(60, 60, 60)
-    if antiAfkOn and not antiAfkThread then
-        antiAfkThread = task.spawn(antiAfkLoop)
-    end
-end)
-
--- ===== SERVER HOP =====
-local function fetchServerList()
-    local url = string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100", PLACE_ID)
-    local ok, res = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet(url))
-    end)
-    if ok and res and res.data then return res.data end
-    return nil
-end
-
-local function doHop(reason)
-    if hopInProgress then
-        status.Text = "hop already in progress"
-        return
-    end
-    hopInProgress = true
-    lastHopAttemptT = tick()
-    status.Text = "hopping: " .. tostring(reason or "timer")
-
-    local ok, err = pcall(function()
-        TeleportService:Teleport(PLACE_ID, LP)
-    end)
-
-    if ok then
-        task.delay(6, function()
-            if hopInProgress then
-                hopInProgress = false
-                status.Text = "silent fail — trying PlaceInstance"
-                task.spawn(function()
-                    local servers = fetchServerList()
-                    if servers and #servers > 0 then
-                        for _, srv in ipairs(servers) do
-                            if srv.id ~= game.JobId and srv.playing < srv.maxPlayers then
-                                local ok2 = pcall(function()
-                                    TeleportService:TeleportToPlaceInstance(PLACE_ID, srv.id, LP)
-                                end)
-                                if ok2 then
-                                    status.Text = "queued: " .. srv.id:sub(1, 8)
-                                    return
-                                end
-                            end
-                        end
-                    else
-                        status.Text = "no servers found"
-                    end
-                    hopInProgress = false
-                    lastHopT = tick() - HOP_INTERVAL + HOP_COOLDOWN
-                end)
-            end
-        end)
-    else
-        status.Text = "Teleport failed: " .. tostring(err)
-        hopInProgress = false
-        lastHopT = tick() - HOP_INTERVAL + HOP_COOLDOWN
-    end
-end
-
-pcall(function()
-    TeleportService.TeleportInitFailed:Connect(function(player, resultCode, errMsg)
-        if player == LP then
-            print("[HOP] TeleportInitFailed:", resultCode, errMsg)
-            status.Text = "init failed: " .. tostring(resultCode)
-            hopInProgress = false
-            lastHopT = tick() - HOP_INTERVAL + HOP_COOLDOWN
-        end
-    end)
-end)
-
-local function hopLoop()
-    while true do
-        task.wait(1)
-        if hopEnabled then
-            local elapsed = tick() - lastHopT
-            local remaining = math.max(0, HOP_INTERVAL - elapsed)
-            local mm = math.floor(remaining / 60)
-            local ss = math.floor(remaining % 60)
-            hopBtn.Text = string.format("Auto-Hop: %02d:%02d", mm, ss)
-            if elapsed >= HOP_INTERVAL and not hopInProgress and (tick() - scriptLoadT) > HOP_SAFETY then
-                doHop("timer")
-            end
-        else
-            hopBtn.Text = "Auto-Hop: OFF"
-            hopBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-        end
-    end
-end
-task.spawn(hopLoop)
-
-hopBtn.MouseButton1Click:Connect(function()
-    hopEnabled = not hopEnabled
-    if hopEnabled then
-        lastHopT = tick()
-    end
-end)
-
-hopNowBtn.MouseButton1Click:Connect(function()
-    if tick() - lastHopAttemptT < HOP_COOLDOWN then
-        status.Text = string.format("cooldown — %ds", math.ceil(HOP_COOLDOWN - (tick() - lastHopAttemptT)))
-        return
-    end
-    doHop("manual")
-end)
-
--- ===== CHARACTER WATCH =====
-local function onCharSpawned(c)
-    charAlive = true
-    local hum = c:FindFirstChildOfClass("Humanoid")
-    if hum then
-        hum.Died:Connect(function()
-            charAlive = false
-            local hrp = c:FindFirstChild("HumanoidRootPart")
-            if hrp then pcall(function() hrp.Anchored = false end) end
-            targetPart = nil
-        end)
-    end
-end
-LP.CharacterAdded:Connect(onCharSpawned)
-if LP.Character then onCharSpawned(LP.Character) end
-
--- ===== ROUND STATE =====
-local function hookRoundRemotes()
-    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-    local gameplay = remotes and remotes:FindFirstChild("Gameplay")
-    if not gameplay then return end
-    local rs = gameplay:FindFirstChild("RoundStart")
-    local re = gameplay:FindFirstChild("RoundEndFade")
-    if rs and rs:IsA("RemoteEvent") and not roundStartConn then
-        roundStartConn = rs.OnClientEvent:Connect(function()
-            inRound = true
-            roundStartAt = tick()
-            mapDirty = true
-            targetPart = nil
-            ignoredCoins = {}
-        end)
-    end
-    if re and re:IsA("RemoteEvent") and not roundEndConn then
-        roundEndConn = re.OnClientEvent:Connect(function()
-            inRound = false
-            targetPart = nil
-            ignoredCoins = {}
-        end)
-    end
-end
-task.spawn(function()
-    while true do
-        hookRoundRemotes()
-        task.wait(1)
-    end
-end)
-
-local function hookTimerLabel()
-    if timerConn then return end
-    local rtp = Workspace:FindFirstChild("RoundTimerPart")
-    if not rtp then return end
-    local sg = rtp:FindFirstChildOfClass("SurfaceGui")
-    if not sg then return end
-    local label = sg:FindFirstChild("CurrentRound") or sg:FindFirstChildWhichIsA("TextLabel", true)
-    if not label then return end
-    timerConn = label:GetPropertyChangedSignal("Text"):Connect(function()
-        if farming then
-            mapDirty = true
-            targetPart = nil
-            ignoredCoins = {}
-        end
-    end)
-end
-task.spawn(function()
-    while true do
-        hookTimerLabel()
-        task.wait(2)
-    end
-end)
-
--- ===== WORKSPACE MAP WATCH =====
-local function workspaceChildChanged(child)
-    if not farming then return end
-    if child == LP.Character then return end
-    if not (child:IsA("Model") or child:IsA("Folder")) then return end
-    if child:IsA("Model") and Players:GetPlayerFromCharacter(child) then return end
-    mapDirty = true
-    targetPart = nil
-    ignoredCoins = {}
-end
-Workspace.ChildAdded:Connect(function(c) task.defer(workspaceChildChanged, c) end)
-Workspace.ChildRemoved:Connect(function(c) task.defer(workspaceChildChanged, c) end)
-
--- ===== DISCOVERY =====
-local function inLobbyObj(obj)
-    local n = obj
-    while n and n ~= Workspace do
-        if n.Name == "Lobby" then return true end
-        n = n.Parent
-    end
-    return false
-end
-
-local function isCoinShape(obj)
-    if not obj or not obj:IsA("BasePart") then return false end
-    if obj:FindFirstChildOfClass("TouchTransmitter") == nil then return false end
-    local hasMeshChild = false
-    for _, child in ipairs(obj:GetChildren()) do
-        if child:IsA("MeshPart") or child:IsA("SpecialMesh") or child:IsA("Mesh") then
-            hasMeshChild = true
-            break
-        end
-    end
-    if not hasMeshChild then return false end
-    if obj.Size.Magnitude > 15 then return false end
-    if inLobbyObj(obj) then return false end
-    local model = obj:FindFirstAncestorOfClass("Model")
-    if model and Players:GetPlayerFromCharacter(model) then return false end
-    return true
-end
-
-local function inBatchContainer(obj)
-    local parent = obj.Parent
-    if not parent then return false end
-    local n = 0
-    for _, sib in ipairs(parent:GetChildren()) do
-        if sib ~= obj and isCoinShape(sib) then
-            n += 1
-            if n >= 2 then return true end
         end
     end
     return false
 end
 
-local function mapRootOf(obj)
-    local n = obj
-    while n and n.Parent and n.Parent ~= Workspace do
-        n = n.Parent
-    end
-    return n
-end
-
-local function isIgnored(coin)
-    local t = ignoredCoins[coin]
-    if not t then return false end
-    if tick() - t > NO_DESPAWN_SKIP then
-        ignoredCoins[coin] = nil
-        return false
-    end
-    return true
-end
-
-local function findNearest(hrp, excludeCoin)
-    local best, bestDist = nil, math.huge
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj ~= excludeCoin and isCoinShape(obj) and inBatchContainer(obj) and not isIgnored(obj) then
-            local d = (hrp.Position - obj.Position).Magnitude
-            if d < bestDist then bestDist = d; best = obj end
-        end
-    end
-    return best, bestDist
-end
-
--- ===== BAG FULL =====
-local function findCandyBagCountLabel()
-    local pg = LP:FindFirstChild("PlayerGui")
-    if not pg then return nil end
-    local main = pg:FindFirstChild("MainGUI")
-    if not main then return nil end
-    local g = main:FindFirstChild("Game")
-    if not g then return nil end
-    local cb = g:FindFirstChild("CoinBags")
-    if not cb then return nil end
-    local container = cb:FindFirstChild("Container")
-    if not container then return nil end
-    local candy = container:FindFirstChild("Candy")
-    if not candy then return nil end
-    local cf = candy:FindFirstChild("CurrencyFrame")
-    if not cf then return nil end
-    local icon = cf:FindFirstChild("Icon")
-    if not icon then return nil end
-    return icon:FindFirstChild("Coins")
-end
-
-local function findFullBagNotification()
-    local pg = LP:FindFirstChild("PlayerGui")
-    if not pg then return nil end
-    local main = pg:FindFirstChild("MainGUI")
-    if not main then return nil end
-    local g = main:FindFirstChild("Game")
-    if not g then return nil end
-    local cb = g:FindFirstChild("CoinBags")
-    if not cb then return nil end
-    local s = cb:FindFirstChild("CoinBagContainerScript")
-    if not s then return nil end
-    return s:FindFirstChild("FullBagNotification")
-end
-
-local observedMax = 50
-local function readBagState()
-    local label = findCandyBagCountLabel()
-    if not label then return nil, nil, false end
-    local n = tonumber(tostring(label.Text):match("%d+"))
-    if n then
-        if n > observedMax then observedMax = n end
-    end
-    local notif = findFullBagNotification()
-    local full = (notif and notif.Visible) or (n ~= nil and n >= observedMax)
-    return n, observedMax, full
-end
-
-local function resetChar()
-    if tick() - lastResetT < 2.5 then return false end
-    local _, hrp, hum = getChar()
-    if not hrp or not hum then return false end
-    lastResetT = tick()
-    status.Text = "bag full — resetting"
-    pcall(function() hrp.Anchored = false end)
-    hum.Health = 0
-    return true
-end
-
--- ===== ROUND GATE =====
-local function charInLobby()
-    local c = LP.Character
-    if not c then return true end
-    local n = c
-    while n and n ~= Workspace do
-        if n.Name == "Lobby" then return true end
-        n = n.Parent
-    end
-    return false
-end
-
-local function currentMapRoot()
-    for _, child in ipairs(Workspace:GetChildren()) do
-        if child ~= LP.Character and child:IsA("Model") then
-            if not Players:GetPlayerFromCharacter(child) then
-                if child.Name ~= "Lobby" and child.Name ~= "EffectLoader"
-                   and child.Name ~= "ServerStatus" then
-                    local cc = child:FindFirstChild("CoinContainer", true)
-                    if cc then return child end
+local function findNearestCandy()
+    local hrp = getHRP()
+    if not hrp then return nil end
+    local origin = hrp.Position
+    local nearest = nil
+    local nearestDist = 5000
+    
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and obj.Name == "Coin_Server" and obj.Parent and obj.Parent.Name == "CoinContainer" then
+            if not collectedCache[obj] then
+                local dist = (obj.Position - origin).Magnitude
+                if dist < nearestDist then
+                    nearestDist = dist
+                    nearest = obj
                 end
             end
         end
     end
-    return nil
+    return nearest
 end
 
-local function roundIsLive()
-    if inRound then return true end
-    if roundStartAt == 0 then
-        if charInLobby() then return false end
-        local root = currentMapRoot()
-        if root then return true end
+local function stopPhase()
+    isTweening = false
+    if currentTweenConn then
+        currentTweenConn:Disconnect()
+        currentTweenConn = nil
     end
-    return false
-end
-
--- ===== COLLISION WIPE =====
-local function wipeCollisionsOnce()
-    local char = getChar()
-    if not char then return end
-    for _, part in ipairs(char:GetDescendants()) do
-        if part:IsA("BasePart") then
-            if originalCollisions[part] == nil then
-                originalCollisions[part] = part.CanCollide
-            end
-            if part.CanCollide then part.CanCollide = false end
-            if not part.Massless then part.Massless = true end
-        end
+    if currentStateConn then
+        currentStateConn:Disconnect()
+        currentStateConn = nil
     end
-end
-
-local function restoreCollisions()
-    for part, orig in pairs(originalCollisions) do
-        if part and part.Parent then
-            part.CanCollide = orig
-            part.Massless = false
-        end
-    end
-    originalCollisions = {}
-end
-
--- ===== GLIDE =====
-local function glideTo(candy)
-    local c0, hrp0, hum0 = getChar()
-    if not c0 or not hrp0 or not hum0 then return false end
-    if not candy or not candy.Parent then return false end
-    hrp0.Anchored = true
-    hum0.WalkSpeed = 0
-    hum0.JumpPower = 0
-
-    while farming do
-        if mapDirty or not roundIsLive() then hrp0.Anchored = false; return false end
-        local c1, hrp1 = getChar()
-        if not c1 or not hrp1 or c1 ~= c0 then return false end
-        if not candy.Parent then hrp0.Anchored = false; return false end
-
-        local dt = RunService.RenderStepped:Wait()
-        if not dt or dt <= 0 then dt = MIN_DT end
-
-        wipeCollisionsOnce()
-
-        local c2, hrp2 = getChar()
-        if not c2 or not hrp2 or c2 ~= c0 then return false end
-        if not candy.Parent then hrp0.Anchored = false; return false end
-
-        local goalPos = candy.Position
-        local cur = hrp2.Position
-        local delta = goalPos - cur
-        local dist = delta.Magnitude
-        if dist <= ARRIVE_DIST then return true end
-
-        local speed = GLIDE_SPEED
-        if dist < APPROACH_DIST then
-            speed = GLIDE_SPEED * math.max(dist / APPROACH_DIST, 0.35)
-        end
-        local step = math.min(speed * dt, dist)
-        pcall(function() hrp2.CFrame = CFrame.new(cur + delta.Unit * step) end)
-    end
-    return false
-end
-
--- ===== COLLECT =====
-local function collectCandyAndFindNext(candy)
-    local c0, hrp, hum = getChar()
-    if not c0 or not hrp or not candy or not candy.Parent then return true, nil end
-
-    local coinPos = candy.Position
-    local l, r = getLegs()
-    if l and r then
-        local legCenter = (l.Position + r.Position) * 0.5
-        pcall(function() hrp.CFrame = CFrame.new(hrp.Position + (coinPos - legCenter)) end)
-        task.wait(0.02)
-        if not candy.Parent then
-            local c1, hrp1 = getChar()
-            if c1 and hrp1 then return true, findNearest(hrp1, candy) end
-            return true, nil
-        end
-        local l2, r2 = getLegs()
-        if l2 and r2 then
-            local lc = (l2.Position + r2.Position) * 0.5
-            local d = coinPos - lc
-            if d.Magnitude > 0.15 then
-                pcall(function() hrp.CFrame = CFrame.new(hrp.Position + d) end)
-            end
-        end
-    else
-        pcall(function() hrp.CFrame = CFrame.new(coinPos) end)
-    end
-
-    hrp.Anchored = false
-    if hum then hum.WalkSpeed = 0; hum.JumpPower = 0 end
-
-    local startT = tick()
-    while farming and candy.Parent and (tick() - startT) < COLLECT_TIMEOUT do
-        if mapDirty then break end
-        local c1, hrp1 = getChar()
-        if not c1 or not hrp1 or c1 ~= c0 then break end
-
-        hrp1.CFrame = CFrame.new(coinPos)
-        hrp1.AssemblyLinearVelocity = Vector3.zero
-        hrp1.AssemblyAngularVelocity = Vector3.zero
-
-        for _, p in ipairs(c0:GetDescendants()) do
-            if p:IsA("BasePart") then
-                pcall(firetouchinterest, p, candy, 0)
-                pcall(firetouchinterest, p, candy, 1)
-            end
-        end
-
-        status.Text = string.format("collecting (%.2fs)", tick() - startT)
-        RunService.Heartbeat:Wait()
-    end
-
-    local c3, hrp3 = getChar()
-    if c3 and hrp3 and c3 == c0 then hrp3.Anchored = true end
-
-    local collected = (candy.Parent == nil)
-    local nextTarget = nil
-    if collected and c3 and hrp3 then
-        nextTarget = findNearest(hrp3, candy)
-    end
-    return collected, nextTarget
-end
-
-local function step()
-    if not farming then return end
-
-    local char, hrp, hum = getChar()
-    if not char then
-        status.Text = charAlive and "no char" or "waiting respawn"
-        task.wait(0.3)
-        return
-    end
-
-    local now = tick()
-
-    if now - lastBagCheck > BAG_CHECK_INTERVAL then
-        lastBagCheck = now
-        local _count, _cap, full = readBagState()
-        if full then
-            if resetChar() then task.wait(1.5); return end
-        end
-    end
-
-    if not roundIsLive() then
-        pcall(function() hrp.Anchored = false end)
-        status.Text = "waiting for round"
-        task.wait(0.3)
-        return
-    end
-
-    local forceScan = mapDirty
-    if not forceScan and now - lastRescan >= RESCAN_INTERVAL then
-        lastRescan = now
-        forceScan = true
-    end
-    if forceScan then
-        mapDirty = false
-        lastRescan = now
-        targetPart = nil
-        ignoredCoins = {}
-        pcall(function() hrp.Anchored = false end)
-        local nxt = findNearest(hrp, nil)
-        if nxt then targetPart = nxt
-        else status.Text = "no coins"; task.wait(0.2); return end
-    end
-
-    if targetPart then
-        if not targetPart.Parent then targetPart = nil
-        else
-            local root = mapRootOf(targetPart)
-            if not root or root.Parent ~= Workspace then targetPart = nil
-            elseif not isCoinShape(targetPart) or not inBatchContainer(targetPart) then targetPart = nil
-            elseif isIgnored(targetPart) then targetPart = nil end
-        end
-    end
-
-    if not targetPart then
-        pcall(function() hrp.Anchored = false end)
-        local nxt = findNearest(hrp, nil)
-        if nxt then targetPart = nxt
-        else task.wait(0.2); return end
-    end
-
-    local candy = targetPart
-    if candy and candy.Parent then
-        if not glideTo(candy) then targetPart = nil; return end
-        if candy.Parent then
-            local ok, nextTarget = collectCandyAndFindNext(candy)
-            if not ok then
-                ignoredCoins[candy] = tick()
-                targetPart = nil
-            else
-                targetPart = nextTarget
-            end
-            return
-        else
-            local c1, hrp1 = getChar()
-            targetPart = (c1 and hrp1) and findNearest(hrp1, candy) or nil
-            return
-        end
-    end
-    targetPart = nil
-end
-
-local function mainLoop()
-    while farming do
-        local ok, err = pcall(step)
-        if not ok then
-            status.Text = "err: " .. tostring(err):sub(1, 80)
-            task.wait(0.2)
-        end
-        if not charAlive then task.wait(0.2) end
-    end
-end
-
-local function toggleFarm(on)
-    if on ~= nil then farming = on else farming = not farming end
-    btn.Text = farming and "Farm: ON" or "Farm: OFF"
-    btn.BackgroundColor3 = farming and Color3.fromRGB(50, 160, 50) or Color3.fromRGB(60, 60, 60)
-    if farming then
-        wipeCollisionsOnce()
-        targetPart = nil
-        inRound = false
-        roundStartAt = 0
-        lastRescan = 0
-        lastBagCheck = 0
-        mapDirty = true
-        ignoredCoins = {}
-        task.spawn(mainLoop)
-    else
-        targetPart = nil
-        local _, hrp, hum = getChar()
-        if hrp then pcall(function() hrp.Anchored = false end) end
+    local char = LocalPlayer.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then hrp.CanCollide = true end
+        local hum = char:FindFirstChild("Humanoid")
         if hum then
-            hum.WalkSpeed = 16
-            hum.JumpPower = 50
             hum:ChangeState(Enum.HumanoidStateType.GettingUp)
         end
-        restoreCollisions()
-        status.Text = "idle"
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                part.CanCollide = true
+            end
+        end
     end
 end
 
-btn.MouseButton1Click:Connect(function() toggleFarm() end)
+local function phaseTweenTo(targetPart)
+    stopPhase()
+    collectedCache[targetPart] = true
+    
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChild("Humanoid")
+    if not hrp or not hum or not targetPart then return end
 
--- ===== AUTO-START =====
-if AUTO_START then
-    task.delay(AUTO_START_DELAY, function()
-        if not farming then
-            toggleFarm(true)
-            status.Text = "auto-started"
+    isTweening = true
+    hum:ChangeState(Enum.HumanoidStateType.Physics)
+
+    currentStateConn = hum.StateChanged:Connect(function(old, new)
+        if isTweening and new ~= Enum.HumanoidStateType.Physics and new ~= Enum.HumanoidStateType.Dead then
+            hum:ChangeState(Enum.HumanoidStateType.Physics)
         end
     end)
-end
--- ===== FORCE RE-EXECUTE ON TELEPORT =====
--- This ensures the script runs again if your executor supports queue_on_teleport
-if queue_on_teleport then
-    queue_on_teleport([[loadstring(game:HttpGet("https://justpaste.it/raw/Coin_Farm_MM2"))()]])
-end
 
--- ... [Rest of your script UI and functions] ...
+    local collected = false
+    local collectWatch = targetPart:GetPropertyChangedSignal("Parent"):Connect(function()
+        if not targetPart.Parent then
+            collected = true
+        end
+    end)
 
--- ===== WATCHDOG (PREVENTS HOUR-LONG STALLS) =====
-task.spawn(function()
-    local lastCoinTime = tick()
-    local lastCoinCount = 0
+    local startCFrame = hrp.CFrame
+    local targetCFrame = CFrame.new(targetPart.Position) 
+    local distance = (startCFrame.Position - targetCFrame.Position).Magnitude
     
-    while true do
-        task.wait(30) -- Check every 30 seconds
-        
-        -- Only check if farming is supposed to be on
-        if farming then
-            local currentCount = readBagState() -- Uses your existing bag reader
-            if currentCount and currentCount > lastCoinCount then
-                -- We got coins, reset the timer
-                lastCoinCount = currentCount
-                lastCoinTime = tick()
-            elseif tick() - lastCoinTime > 300 then -- 300 seconds = 5 minutes without a coin
-                print("[WATCHDOG] No coins collected in 5 minutes. Forcing a server hop...")
-                status.Text = "Watchdog: Stalled, hopping..."
-                doHop("watchdog")
-                lastCoinTime = tick() -- Reset timer to give the hop time to work
+    local duration = distance / SPEED_STUDS_PER_SEC
+    local startTime = os.clock()
+
+    hrp.CanCollide = false
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+
+    local reachedTarget = false
+
+    currentTweenConn = RunService.Heartbeat:Connect(function()
+        local currentHRP = getHRP()
+        if not currentHRP or reachedTarget or collected then 
+            if not reachedTarget then
+                reachedTarget = true
+                stopPhase()
             end
-        else
-            -- If farming is off, keep the timer fresh so it doesn't trigger when turned on
-            lastCoinTime = tick() 
+            return 
+        end
+
+        local elapsed = os.clock() - startTime
+        local alpha = math.clamp(elapsed / duration, 0, 1)
+        
+        currentHRP.CFrame = startCFrame:Lerp(targetCFrame, alpha)
+        currentHRP.Velocity = Vector3.new(0, 0, 0)
+        currentHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+
+        if alpha >= 1 then
+            reachedTarget = true
+            stopPhase()
+        end
+    end)
+    
+    while not reachedTarget do
+        task.wait(0.01)
+    end
+    
+    collectWatch:Disconnect()
+    
+    if hum then
+        hum:ChangeState(Enum.HumanoidStateType.Freefall)
+    end
+    
+    task.wait(0.2)
+end
+
+local function waitForNextRound()
+    isWaitingForNextRound = true
+    stopPhase()
+    collectedCache = {} 
+    
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChild("Humanoid")
+        if hum and hum.Health > 0 then 
+            hum.Health = 0 
+        end
+    end
+    
+    LocalPlayer.CharacterAdded:Wait()
+    task.wait(2)
+    
+    isWaitingForNextRound = false
+end
+
+local function startFarmLoop()
+    task.spawn(function()
+        while FARM_ACTIVE do
+            if isWaitingForNextRound then
+                task.wait(0.5)
+                continue
+            end
+
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChild("Humanoid")
+            
+            if isBagFull() or (hum and hum.Health <= 0) then
+                waitForNextRound()
+                continue
+            end
+
+            local candy = findNearestCandy()
+            if candy then
+                phaseTweenTo(candy)
+            else
+                task.wait(0.2)
+            end
+        end
+        stopPhase()
+    end)
+end
+
+ClickBtn.MouseButton1Click:Connect(function()
+    toggleUI(not FARM_ACTIVE)
+    if FARM_ACTIVE then
+        startFarmLoop()
+    else
+        stopPhase()
+    end
+end)
+
+-- ============================================================
+-- SERVER HOP & AUTO-RECONNECT
+-- ============================================================
+local function getServerHop()
+    local servers = {}
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
+    end)
+    if success and result and result.data then
+        for _, server in ipairs(result.data) do
+            if server.playing < server.maxPlayers and server.id ~= game.JobId then
+                table.insert(servers, server.id)
+            end
+        end
+    end
+    return servers
+end
+
+local function saveAndTeleport()
+    local queueFunc = nil
+    if syn and syn.queue_on_teleport then
+        queueFunc = syn.queue_on_teleport
+    elseif queue_on_teleport then
+        queueFunc = queue_on_teleport
+    elseif fluxus and fluxus.queue_on_teleport then
+        queueFunc = fluxus.queue_on_teleport
+    end
+
+    if queueFunc and getscriptbytecode then
+        pcall(function()
+            local scriptSource = getscriptbytecode()
+            if scriptSource then
+                queueFunc(scriptSource)
+            end
+        end)
+    end
+    
+    local available = getServerHop()
+    local nextServer = #available > 0 and available[math.random(1, #available)] or nil
+    
+    if nextServer then
+        pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, nextServer, LocalPlayer)
+        end)
+    else
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId, LocalPlayer)
+        end)
+    end
+end
+
+-- 15 Minute Hop
+task.spawn(function()
+    task.wait(HOP_INTERVAL)
+    saveAndTeleport()
+end)
+
+-- Aggressive Disconnect Monitor (0.5s)
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if not LocalPlayer or not LocalPlayer.Parent or game:GetService("Players").LocalPlayer == nil then
+            if not disconnectTriggered then
+                disconnectTriggered = true
+                saveAndTeleport()
+            end
         end
     end
 end)
+
+-- ============================================================
+-- AUTO-START ON EXECUTION
+-- ============================================================
+task.wait(1)
+if not FARM_ACTIVE then
+    toggleUI(true)
+    startFarmLoop()
+end
